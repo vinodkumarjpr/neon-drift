@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Neon Drift</title>
+<style>
+:root{--bg:#0b0820;--ink:#f3eeff;--pink:#ff3d9a;--cyan:#27e6ff;--amber:#ffc83d;color-scheme:dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{position:relative;height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:'Chakra Petch',system-ui,sans-serif;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+#stage{position:absolute;inset:0}
+#stage canvas{display:block;width:100%;height:100%}
+#hud{position:absolute;left:0;right:0;top:0;display:flex;justify-content:space-between;padding:14px 18px;font-size:clamp(18px,4vw,28px);font-weight:700;pointer-events:none;text-shadow:0 0 12px rgba(39,230,255,.6)}
+#hud .c{color:var(--amber);text-shadow:0 0 12px rgba(255,200,61,.6)}
+#ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;background:rgba(11,8,32,.72)}
+#ov.hide{display:none}
+h1{margin:0;font-size:clamp(44px,12vw,92px);line-height:.95;font-weight:700;letter-spacing:.02em;color:var(--cyan);text-shadow:0 0 28px rgba(39,230,255,.55),4px 4px 0 var(--pink)}
+#msg{margin:0;max-width:34ch;font-size:clamp(16px,3.6vw,20px);line-height:1.5}
+button{font:inherit;font-weight:700;font-size:20px;padding:14px 34px;border:0;border-radius:4px;background:var(--pink);color:#fff;cursor:pointer;box-shadow:0 0 22px rgba(255,61,154,.6)}
+button:focus-visible{outline:3px solid var(--cyan);outline-offset:3px}
+@media (prefers-reduced-motion:reduce){button{box-shadow:none}}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="hud"><span id="sc">0 m</span><span class="c" id="cn">0 coins</span></div>
+<div id="ov">
+  <h1 id="ttl">NEON<br>DRIFT</h1>
+  <p id="msg">Left/right arrow, A/D, ya screen ke left/right side tap karke lane badlo. Pink blocks se bacho aur sone ke coins uthao.</p>
+  <button id="go">Game shuru karo</button>
+</div>
+<script src="three.min.js"></script>
+<script>
+(function(){
+var LANES=[-2.4,0,2.4], BG=0x0b0820;
+var stage=document.getElementById('stage');
+var renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+stage.appendChild(renderer.domElement);
+var scene=new THREE.Scene();
+scene.background=new THREE.Color(BG);
+scene.fog=new THREE.Fog(BG,25,95);
+var cam=new THREE.PerspectiveCamera(65,1,0.1,200);
+cam.position.set(0,4.2,7.5);
+scene.add(new THREE.AmbientLight(0x8877ff,0.9));
+var sun=new THREE.DirectionalLight(0xffffff,0.9);
+sun.position.set(3,8,4);scene.add(sun);
+
+// road
+var road=new THREE.Mesh(new THREE.PlaneGeometry(8,260),new THREE.MeshStandardMaterial({color:0x140f35,roughness:.9}));
+road.rotation.x=-Math.PI/2;road.position.z=-100;scene.add(road);
+[-3.9,3.9].forEach(function(x){
+  var e=new THREE.Mesh(new THREE.BoxGeometry(.15,.15,260),new THREE.MeshBasicMaterial({color:0x27e6ff}));
+  e.position.set(x,.08,-100);scene.add(e);
+});
+
+// scrolling scenery: lane dashes + side pillars
+var scenery=[];
+for(var i=0;i<20;i++){
+  [-1.2,1.2].forEach(function(x){
+    var d=new THREE.Mesh(new THREE.BoxGeometry(.12,.02,2.4),new THREE.MeshBasicMaterial({color:0x5b4bb0}));
+    d.position.set(x,.03,-i*6);scene.add(d);scenery.push(d);
+  });
+}
+var pillarMat=new THREE.MeshStandardMaterial({color:0x2a1b6e,emissive:0xff3d9a,emissiveIntensity:.5});
+for(var j=0;j<10;j++){
+  [-7,7].forEach(function(x){
+    var h=3+Math.random()*7;
+    var p=new THREE.Mesh(new THREE.BoxGeometry(1.4,h,1.4),pillarMat);
+    p.position.set(x,h/2,-j*12);scene.add(p);scenery.push(p);
+  });
+}
+
+// ship
+var ship=new THREE.Group();
+var body=new THREE.Mesh(new THREE.ConeGeometry(.7,2.2,4),new THREE.MeshStandardMaterial({color:0x27e6ff,emissive:0x27e6ff,emissiveIntensity:.5,flatShading:true}));
+body.rotation.x=-Math.PI/2;body.rotation.y=Math.PI/4;
+ship.add(body);
+ship.position.set(0,.7,0);scene.add(ship);
+
+// item templates
+var obMesh=new THREE.Mesh(new THREE.BoxGeometry(1.8,1.8,1.8),new THREE.MeshStandardMaterial({color:0xff3d9a,emissive:0xff3d9a,emissiveIntensity:.45}));
+var coinMesh=new THREE.Mesh(new THREE.TorusGeometry(.45,.14,10,20),new THREE.MeshStandardMaterial({color:0xffc83d,emissive:0xffc83d,emissiveIntensity:.6}));
+
+var state='menu',speed=18,dist=0,coins=0,gap=0,lane=1,items=[],shake=0,best=0;
+try{best=+localStorage.getItem('neonDriftBest')||0;}catch(e){}
+var clock=new THREE.Clock();
+var ov=document.getElementById('ov'),msg=document.getElementById('msg'),ttl=document.getElementById('ttl'),go=document.getElementById('go');
+var sc=document.getElementById('sc'),cn=document.getElementById('cn');
+
+function add(t,l){
+  var m=(t==='ob'?obMesh:coinMesh).clone();
+  m.position.set(LANES[l],t==='ob'?.9:1,-95);
+  scene.add(m);items.push({t:t,m:m});
+}
+function spawn(){
+  var free=Math.floor(Math.random()*3);
+  for(var l=0;l<3;l++){
+    if(l===free){if(Math.random()<.75)add('coin',l);continue;}
+    if(Math.random()<.65)add('ob',l);
+  }
+}
+function start(){
+  items.forEach(function(o){scene.remove(o.m);});items=[];
+  speed=18;dist=0;coins=0;gap=0;lane=1;shake=0;
+  ship.position.x=0;ship.rotation.z=0;
+  state='play';ov.classList.add('hide');
+}
+function crash(){
+  state='over';shake=1;
+  var score=Math.floor(dist);
+  if(score>best){best=score;try{localStorage.setItem('neonDriftBest',String(best));}catch(e){}}
+  ttl.innerHTML='CRASH!';
+  msg.textContent=score+' m, '+coins+' coins. Best: '+best+' m.';
+  go.textContent='Phir se khelo';
+  setTimeout(function(){ov.classList.remove('hide');go.focus();},500);
+}
+function move(d){if(state==='play')lane=Math.max(0,Math.min(2,lane+d));}
+
+go.addEventListener('click',start);
+window.addEventListener('keydown',function(e){
+  var k=e.key;
+  if(k==='ArrowLeft'||k==='a'||k==='A')move(-1);
+  else if(k==='ArrowRight'||k==='d'||k==='D')move(1);
+  else if((k===' '||k==='Enter')&&state!=='play'&&document.activeElement!==go)start();
+});
+window.addEventListener('pointerdown',function(e){
+  if(state!=='play'||e.target.tagName==='BUTTON')return;
+  move(e.clientX<window.innerWidth/2?-1:1);
+});
+
+function resize(){
+  var w=stage.clientWidth,h=stage.clientHeight;
+  renderer.setSize(w,h,false);
+  cam.aspect=w/h;
+  cam.position.z=w/h<.8?10:7.5;
+  cam.position.y=w/h<.8?5.2:4.2;
+  cam.lookAt(0,1,-8);
+  cam.updateProjectionMatrix();
+}
+window.addEventListener('resize',resize);resize();
+
+function tick(){
+  requestAnimationFrame(tick);
+  var dt=Math.min(clock.getDelta(),.05);
+  var run=state==='play';
+  var v=run?speed:(state==='menu'?6:0);
+  scenery.forEach(function(s){s.position.z+=v*dt;if(s.position.z>10)s.position.z-=120;});
+  if(run){
+    speed+=dt*.45;dist+=speed*dt;gap-=speed*dt;
+    if(gap<=0){spawn();gap=Math.max(13,26-speed*.3);}
+    var tx=LANES[lane];
+    ship.position.x+=(tx-ship.position.x)*Math.min(1,dt*12);
+    ship.rotation.z=(ship.position.x-tx)*.25;
+    for(var i=items.length-1;i>=0;i--){
+      var o=items[i],m=o.m;
+      m.position.z+=speed*dt;
+      if(o.t==='coin')m.rotation.y+=dt*4;
+      if(m.position.z>9){scene.remove(m);items.splice(i,1);continue;}
+      if(Math.abs(m.position.z)<1.3&&Math.abs(m.position.x-ship.position.x)<1.3){
+        if(o.t==='coin'){coins++;scene.remove(m);items.splice(i,1);}
+        else{crash();break;}
+      }
+    }
+    sc.textContent=Math.floor(dist)+' m';
+    cn.textContent=coins+' coins';
+  }
+  if(shake>0){
+    shake=Math.max(0,shake-dt*2);
+    cam.position.x=(Math.random()-.5)*shake;
+  }else cam.position.x=0;
+  renderer.render(scene,cam);
+}
+tick();
+})();
+</script>
+</body>
+</html>
